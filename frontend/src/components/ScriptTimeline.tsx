@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { Episode, Event, EventCategory } from '../types';
+import { Episode, Event, EventCategory, PromoCandidate } from '../types';
 import { formatMsToTimestamp, formatDurationHuman } from '../lib/utils';
 import {
   Search,
@@ -9,20 +9,23 @@ import {
   Mic,
   Volume2,
   HelpCircle,
-  AlertTriangle,
   Layers,
+  Zap,
+  Target,
 } from 'lucide-react';
 
 interface ScriptTimelineProps {
   episode: Episode;
   selectedEventId: string | null;
   onSelectEvent: (event: Event) => void;
+  activePromo: PromoCandidate | null;
 }
 
 export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
   episode,
   selectedEventId,
   onSelectEvent,
+  activePromo,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [categoryFilter, setCategoryFilter] = useState<EventCategory | 'all'>('all');
@@ -59,7 +62,6 @@ export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
       if (entry) {
         entry.events.push(ev);
       } else {
-        // Orphan event without explicit scene
         map.set(ev.scene_id, { scene: undefined, events: [ev] });
       }
     }
@@ -108,6 +110,24 @@ export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
 
   return (
     <div className="flex-1 flex flex-col h-[calc(100vh-101px)] bg-paper-100 overflow-hidden">
+      {/* Active Promo Highlight Banner if a promo is currently selected */}
+      {activePromo && (
+        <div className="bg-burnt-50 border-b border-burnt-200 px-5 py-2.5 flex items-center justify-between text-xs text-burnt-900">
+          <div className="flex items-center space-x-2">
+            <span className="w-5 h-5 rounded-full bg-burnt-700 text-white font-mono text-[11px] font-bold flex items-center justify-center">
+              #{activePromo.rank}
+            </span>
+            <span className="font-bold">Highlighting Promo: "{activePromo.editorial_title}"</span>
+            <span className="text-burnt-700 font-mono">
+              [{activePromo.segment.start_timestamp} – {activePromo.segment.end_timestamp}] ({activePromo.segment.duration_seconds}s)
+            </span>
+          </div>
+          <span className="text-[11px] text-burnt-800 bg-burnt-100 px-2 py-0.5 rounded border border-burnt-300">
+            {activePromo.segment.event_ids.length} events active
+          </span>
+        </div>
+      )}
+
       {/* Episode Header & Editorial Metadata */}
       <div className="p-5 border-b border-paper-300 bg-paper-50">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-2">
@@ -136,19 +156,6 @@ export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
           <div className="mt-1 text-[11px] text-charcoal-subtle leading-relaxed">
             <span className="font-semibold text-charcoal">Continuity: </span>
             {episode.continuity_notes}
-          </div>
-        )}
-
-        {/* Episode warnings alert banner if any */}
-        {episode.warnings.length > 0 && (
-          <div className="mt-3 p-2.5 bg-amber-50 border border-amber-200 rounded text-xs text-amber-900 flex items-start space-x-2">
-            <AlertTriangle className="w-4 h-4 text-amber-700 flex-shrink-0 mt-0.5" />
-            <div className="flex-1">
-              <span className="font-semibold">{episode.warnings.length} parsing warning(s) in this script: </span>
-              <span className="text-[11px] text-amber-800">
-                {episode.warnings.map(w => `${w.code} (L${w.line || '?'}): ${w.message}`).join(' • ')}
-              </span>
-            </div>
           </div>
         )}
       </div>
@@ -260,6 +267,17 @@ export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
                     const isSelected = ev.id === selectedEventId;
                     const durationMs = ev.end_ms - ev.start_ms;
 
+                    // Promo candidate highlights
+                    const isInActivePromo = activePromo
+                      ? activePromo.segment.event_ids.includes(ev.id)
+                      : false;
+                    const isHookEvent = activePromo && isInActivePromo
+                      ? activePromo.hook_event_ids.includes(ev.id) || ev.start_ms < activePromo.segment.start_ms + 3000
+                      : false;
+                    const isCliffEvent = activePromo && isInActivePromo
+                      ? activePromo.cliffhanger_event_ids.includes(ev.id) || ev.end_ms > activePromo.segment.end_ms - 5000
+                      : false;
+
                     return (
                       <div
                         key={ev.id}
@@ -267,6 +285,8 @@ export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
                         className={`group relative p-3.5 rounded-lg border transition-all cursor-pointer ${
                           isSelected
                             ? 'bg-paper-50 border-burnt-700 shadow-sm ring-1 ring-burnt-700'
+                            : isInActivePromo
+                            ? 'bg-burnt-50/40 border-burnt-400 shadow-xs'
                             : 'bg-paper-50/70 hover:bg-paper-50 border-paper-300 hover:border-charcoal-subtle'
                         }`}
                       >
@@ -287,6 +307,18 @@ export const ScriptTimeline: React.FC<ScriptTimelineProps> = ({
                           </div>
 
                           <div className="flex items-center space-x-2 text-[11px] font-mono text-charcoal-muted">
+                            {isHookEvent && (
+                              <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-burnt-200 text-burnt-900 border border-burnt-300">
+                                <Zap className="w-3 h-3 text-burnt-700" />
+                                <span>3s Hook</span>
+                              </span>
+                            )}
+                            {isCliffEvent && (
+                              <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-100 text-indigo-900 border border-indigo-300">
+                                <Target className="w-3 h-3 text-indigo-700" />
+                                <span>Cut Point</span>
+                              </span>
+                            )}
                             <span className="bg-paper-200 px-1.5 py-0.5 rounded border border-paper-300">
                               {formatMsToTimestamp(ev.start_ms)} – {formatMsToTimestamp(ev.end_ms)}
                             </span>

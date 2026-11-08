@@ -23,23 +23,63 @@ def parse_arguments():
     parser = argparse.ArgumentParser(
         description="Parse microdrama screenplays and generate validation reports."
     )
-    parser.add_argument(
+    subparsers = parser.add_subparsers(dest="command", help="Subcommand to execute")
+
+    # Ingest / validate command (default)
+    ingest_parser = subparsers.add_parser("ingest", help="Ingest and validate screenplays")
+    ingest_parser.add_argument(
         "inputs",
         nargs="+",
         help="Path(s) to .txt script files, directories containing .txt files, or .zip archives.",
     )
-    parser.add_argument(
+    ingest_parser.add_argument(
         "--report",
         "-r",
         help="Path to write the JSON validation report (e.g. private_outputs/validation_report.json).",
         default=None,
     )
-    parser.add_argument(
+    ingest_parser.add_argument(
         "--quiet",
         "-q",
         action="store_true",
         help="Suppress human-readable summary output.",
     )
+
+    # Analyze promos command
+    analyze_parser = subparsers.add_parser("analyze", help="Analyze promo candidates for an episode using AI")
+    analyze_parser.add_argument(
+        "input",
+        nargs="?",
+        default=None,
+        help="Path to .txt script or .zip archive containing episodes.",
+    )
+    analyze_parser.add_argument(
+        "--input",
+        "-i",
+        dest="input_opt",
+        default=None,
+        help="Path to .txt script or .zip archive containing episodes.",
+    )
+    analyze_parser.add_argument(
+        "--episode",
+        "-e",
+        type=int,
+        default=None,
+        help="Episode number to analyze (if omitted, analyzes the first episode found).",
+    )
+    analyze_parser.add_argument(
+        "--model",
+        "-m",
+        default=None,
+        help="Override Gemini model identifier.",
+    )
+    analyze_parser.add_argument(
+        "--out",
+        "-o",
+        default=None,
+        help="Path to save raw JSON promo analysis report (e.g. private_outputs/episode_001_promos.json).",
+    )
+
     return parser.parse_args()
 
 
@@ -144,9 +184,103 @@ def generate_validation_summary(response: IngestPreviewResponse) -> dict:
     return report
 
 
+def handle_analyze(args):
+    from app.services.ai.orchestrator import analyze_episode_for_promos
+    input_path = args.input_opt or args.input
+    if not input_path:
+        print("Error: Input path to .txt or .zip required.", file=sys.stderr)
+        sys.exit(1)
+
+    payloads = collect_file_payloads([input_path])
+    if not payloads:
+        print(f"Error: No valid screenplay files found in '{input_path}'", file=sys.stderr)
+        sys.exit(1)
+
+    ingest_res = process_ingestion_payloads(payloads)
+    if not ingest_res.episodes:
+        print("Error: Ingestion yielded 0 valid episodes.", file=sys.stderr)
+        sys.exit(1)
+
+    target_ep = None
+    if args.episode is not None:
+        for ep in ingest_res.episodes:
+            if ep.episode_number == args.episode:
+                target_ep = ep
+                break
+        if not target_ep:
+            print(f"Error: Episode {args.episode} not found in input.", file=sys.stderr)
+            sys.exit(1)
+    else:
+        target_ep = ingest_res.episodes[0]
+
+    print(f"\nAnalyzing Episode {target_ep.episode_number or 'Untitled'} ({target_ep.filename}) for promo candidates...")
+    print(f"Total events: {len(target_ep.events)} | Duration: {target_ep.duration_ms / 1000:.1f}s")
+
+    try:
+        res = analyze_episode_for_promos(
+            episode=target_ep,
+            model_override=args.model,
+        )
+    except Exception as e:
+        print(f"AI Promo analysis failed: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    print("\n=== Promo Discovery Results ===")
+    print(f"Model: {res.metadata.get('model')} (Total Latency: {res.metadata.get('total_latency_ms', 0)} ms)")
+    print(f"API Calls: {res.metadata.get('api_calls_completed', 1)} completed of {res.metadata.get('api_calls_attempted', 1)} attempted | Assessment Status: {res.metadata.get('assessment_status')}")
+    print(f"Tokens: Generation: {res.metadata.get('generation_tokens')} | Assessment: {res.metadata.get('assessment_tokens')}")
+    print(f"Cache Key: {res.cache_key}")
+    print(f"Proposals Generated: {res.metadata.get('total_proposals_generated')}")
+    print(f"Candidates Accepted: {len(res.candidates)}")
+    print(f"Proposals Rejected: {len(res.rejected_proposals)}")
+    print(f"Duplicates Suppressed: {len(res.suppressed_candidates)}")
+
+    for c in res.candidates:
+        seg = c.segment
+        print(f"\n[Rank #{c.rank}] {c.editorial_title}")
+        print(f"  Duration: {seg.duration_seconds}s | Range: {seg.start_timestamp} -> {seg.end_timestamp} ({len(seg.events)} events)")
+        print(f"  Hook (First 3s): {c.hook_explanation}")
+        print(f"  Cliffhanger: {c.cliffhanger_explanation}")
+        print(f"  Unresolved Question: {c.unresolved_question}")
+        print(f"  Rationale: {c.rationale}")
+        if c.rubric:
+            print(f"  Editorial Rubric: Score {c.rubric.overall_score}/5.0 (Opening: {c.rubric.opening_strength}, Clarity: {c.rubric.standalone_clarity}, Stakes: {c.rubric.escalation_stakes}, Ending: {c.rubric.unresolved_ending})")
+        else:
+            print("  Editorial Rubric: Assessment unavailable (mechanically valid cut)")
+        if c.review_flags:
+            print(f"  Review Flags: {', '.join(c.review_flags)}")
+
+    if res.rejected_proposals:
+        print(f"\n--- Rejected Proposals ({len(res.rejected_proposals)}) ---")
+        for r in res.rejected_proposals:
+            print(f"  - '{r.proposal.editorial_title}': {'; '.join(r.rejection_reasons)}")
+
+    if args.out:
+        os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)
+        with open(args.out, "w", encoding="utf-8") as f:
+            f.write(res.model_dump_json(indent=2))
+        print(f"\nRaw analysis and audit exported to: {args.out}")
+
+
 def main():
     args = parse_arguments()
-    payloads = collect_file_payloads(args.inputs)
+    command = args.command or "ingest"
+
+    if command == "analyze":
+        handle_analyze(args)
+        return
+
+    # Ingest / validation logic
+    inputs = getattr(args, "inputs", None)
+    if not inputs:
+        # Fallback if no command specified but inputs passed
+        if len(sys.argv) > 1 and not sys.argv[1].startswith("-"):
+            inputs = [sys.argv[1]]
+        else:
+            print("Please specify files or archive to ingest.", file=sys.stderr)
+            sys.exit(1)
+
+    payloads = collect_file_payloads(inputs)
     if not payloads:
         print("No valid files or zip archives found to process.", file=sys.stderr)
         sys.exit(1)

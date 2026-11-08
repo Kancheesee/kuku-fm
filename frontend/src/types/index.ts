@@ -70,3 +70,94 @@ export interface HealthResponse {
   version: string;
   database_connected: boolean;
 }
+
+// Milestone 2 Promo Discovery Schemas
+export interface PromoSegment {
+  episode_id: string;
+  episode_number?: number | null;
+  filename: string;
+  source_content_hash: string;
+  start_ms: number;
+  end_ms: number;
+  start_timestamp: string;
+  end_timestamp: string;
+  duration_ms: number;
+  duration_seconds: number;
+  event_ids: string[];
+  events: Event[];
+}
+
+export interface EditorialRubricScore {
+  opening_strength: number;
+  standalone_clarity: number;
+  escalation_stakes: number;
+  unresolved_ending: number;
+  opening_reason: string;
+  clarity_reason: string;
+  stakes_reason: string;
+  ending_reason: string;
+  grounded_unresolved_question?: string | null;
+  uncertainty_or_weakness?: string | null;
+  overall_score: number;
+}
+
+export interface PromoCandidate {
+  id: string;
+  rank: number;
+  editorial_title: string;
+  episode_number?: number | null;
+  filename: string;
+  source_content_hash: string;
+  segment: PromoSegment;
+  hook_explanation: string;
+  hook_event_ids: string[];
+  cliffhanger_explanation: string;
+  cliffhanger_event_ids: string[];
+  unresolved_question: string;
+  rationale: string;
+  standalone_assessment: string;
+  editorial_risks: string[];
+  assessment_status?: 'assessed' | 'unavailable';
+  rubric?: EditorialRubricScore | null;
+  review_flags: string[];
+  mechanical_status: 'passed' | 'warning';
+}
+
+export interface RawCandidateProposal {
+  editorial_title: string;
+  start_event_id: string;
+  end_event_id: string;
+  hook_explanation: string;
+  hook_event_ids: string[];
+  cliffhanger_explanation: string;
+  cliffhanger_event_ids: string[];
+  unresolved_question: string;
+  rationale: string;
+  standalone_assessment: string;
+  editorial_risks: string[];
+}
+
+export interface RejectedProposal {
+  proposal: RawCandidateProposal;
+  rejection_reasons: string[];
+  rejection_codes: string[];
+}
+
+export interface PromoAnalysisResponse {
+  episode_id: string;
+  episode_number?: number | null;
+  filename: string;
+  source_content_hash: string;
+  parser_version: string;
+  prompt_version: string;
+  assessment_prompt_version: string;
+  model: string;
+  cache_key: string;
+  candidates: PromoCandidate[];
+  rejected_proposals: RejectedProposal[];
+  suppressed_candidates: PromoCandidate[];
+  metadata: Record<string, any>;
+  raw_generation_response: string;
+  raw_assessment_response?: string | null;
+  raw_model_response?: string;
+}
