@@ -1,0 +1,10 @@
+{
+  "name": "kuku-promo-studio",
+  "version": "0.3.0",
+  "private": true,
+  "scripts": {
+    "build": "cd frontend && npm install && npm run build",
+    "test": "cd frontend && npm test -- --run"
+  }
+}
+

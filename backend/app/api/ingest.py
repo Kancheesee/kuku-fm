@@ -21,11 +21,21 @@ async def ingest_preview(
             detail="No files were provided for ingestion preview.",
         )
 
+    MAX_UPLOAD_BYTES = 4_400_000  # 4.4MB guard for Vercel 4.5MB serverless limit
+    total_bytes = 0
     raw_files = []
     for file in files:
         try:
             content = await file.read()
+            total_bytes += len(content)
+            if total_bytes > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                    detail="Uploaded file payload exceeds the 4.5MB Vercel serverless limit. Please upload files in smaller packs.",
+                )
             raw_files.append((file.filename or "unknown.txt", content))
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,

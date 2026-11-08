@@ -260,12 +260,28 @@ def export_run_ranking_json(
     session_hash: str = Depends(get_or_create_session_hash),
     db: Session = Depends(require_db),
 ):
-    """Export complete audit JSON for a run (enforces session ownership)."""
+    """Export complete audit JSON for a run (enforces session ownership and checks payload size)."""
     run = runs_service.get_run(db=db, run_id=run_id, session_hash=session_hash)
     if not run:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Run {run_id} not found")
+
+    content_str = run.model_dump_json(indent=2)
+    content_bytes = content_str.encode("utf-8")
+    MAX_PAYLOAD_LIMIT = 4_400_000  # 4.4MB guard for 4.5MB serverless response limit
+
+    if len(content_bytes) > MAX_PAYLOAD_LIMIT:
+        compact_str = run.model_dump_json()
+        compact_bytes = compact_str.encode("utf-8")
+        if len(compact_bytes) <= MAX_PAYLOAD_LIMIT:
+            content_bytes = compact_bytes
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
+                detail=f"Run audit payload ({len(content_bytes)} bytes) exceeds the 4.5MB serverless limit. Please export candidates as CSV instead.",
+            )
+
     return Response(
-        content=run.model_dump_json(indent=2),
+        content=content_bytes,
         media_type="application/json",
         headers={"Content-Disposition": f'attachment; filename="run_{run_id}_audit.json"'},
     )

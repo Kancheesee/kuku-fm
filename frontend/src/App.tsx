@@ -74,6 +74,16 @@ export const App: React.FC = () => {
   }, []);
 
   const handleFilesSelected = async (files: File[]) => {
+    // Client-side payload size check for instantaneous, actionable user feedback
+    const totalBytes = files.reduce((acc, f) => acc + f.size, 0);
+    const MAX_UPLOAD_BYTES = 4.4 * 1024 * 1024; // 4.4 MB Vercel serverless request safety threshold
+    if (totalBytes > MAX_UPLOAD_BYTES) {
+      setErrorMessage(
+        `Upload payload (${(totalBytes / (1024 * 1024)).toFixed(2)} MB) exceeds the 4.4 MB Vercel serverless limit. Please compress files into a .zip archive or upload fewer episodes per pack.`
+      );
+      return;
+    }
+
     setIsLoading(true);
     setErrorMessage(null);
     try {

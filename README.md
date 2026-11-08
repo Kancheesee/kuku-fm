@@ -176,11 +176,75 @@ Open `http://localhost:5173` in your browser.
    - Incomplete runs clearly display a **"Provisional"** badge with completed episode coverage.
    - Click **"CSV Shortlist"** or **"Raw Audit (JSON)"** to export show-wide candidate shortlists.
 
+## Vercel Deployment Guide
+
+### 1. Vercel Project Import Settings
+
+When importing this repository into Vercel:
+
+| Setting | Value | Notes |
+|---|---|---|
+| **Root Directory** | `./` (repository root) | Leave at root so both `frontend` and `api/` are included |
+| **Framework Preset** | **Other** (or auto-detected Vite) | Configuration is managed by `vercel.json` |
+| **Build Command** | `npm run build` | Runs `cd frontend && npm install && npm run build` |
+| **Output Directory** | `frontend/dist` | Serves compiled React SPA assets |
+| **Install Command** | `npm install` | Installs root orchestrator scripts |
+| **Python Function** | Auto-detected at `api/index.py` | Runs via Vercel Serverless Python runtime |
+
+### 2. Required Environment Variables
+
+Configure these variables in your Vercel Project Settings (**Settings $\to$ Environment Variables**):
+
+| Variable Name | Required Environment | Purpose |
+|---|---|---|
+| `DATABASE_URL` | Production & Preview | Neon PostgreSQL **connection-pooled** URL (`postgresql+psycopg://...-pooler...neon.tech/neondb?sslmode=require`) used by FastAPI runtime |
+| `DIRECT_URL` | Local / CI migrations | Neon PostgreSQL **unpooled direct** URL used for Alembic DDL schema migrations (`alembic upgrade head`) |
+| `GEMINI_API_KEY` | Production & Preview | Google Gemini API key for promo generation & batched assessment |
+| `GEMINI_MODEL` | Production & Preview | Selected Gemini model identifier (e.g. `gemini-3.5-flash-lite`) |
+| `ENVIRONMENT` | Production | Set to `production` (enforces `Secure` flag on `HttpOnly` session cookies) |
+| `ALLOWED_ORIGINS` | Optional / Production | Comma-separated list of custom domains (e.g. `https://my-promo-studio.com`). Exact Vercel deployment URLs (`VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_BRANCH_URL`) are derived automatically without wildcards. |
+
+*(Never commit or expose secrets in version control).*
+
+### 3. Database Migration Step
+
+> [!IMPORTANT]
+> Migrations are decoupled from application startup to protect serverless performance and prevent concurrent migration locks.
+
+Run pending migrations explicitly against your Neon database before deploying:
+
+```bash
+# Run from repository root with DIRECT_URL configured in your environment
+source venv/bin/activate
+cd backend
+alembic upgrade head
+```
+
+### 4. Deployment Limitations & Platform Guardrails
+
+1. **4.5 MB Serverless Payload Limit**: Vercel serverless functions reject request or response bodies exceeding 4.5 MB with HTTP 413. The application enforces a 4.4 MB safeguard on `/api/ingest/preview` and `/api/runs/{id}/export/json`, along with an instant client-side check in `handleFilesSelected`. Measured sizes: 50-episode `.zip` upload is 220.8 KB, full preview response is 2.36 MB, saved run reload is 77 KB, and full JSON audit export is 258 KB.
+2. **120s Function Execution Budget & 90s Pipeline Deadline**: Serverless functions are configured with `maxDuration: 120`. GenAI SDK retries are bounded to `attempts=1`. Worst-case generation-plus-assessment execution is capped by an enforced 90s pipeline deadline with a 30s safety margin before Call 2. Episode leases are set to 180s (3 minutes), guaranteeing that active attempts never expire while running.
+3. **Assessment Quota Persistence & Resumed Retry**: If Gemini API quota is exhausted during assessment (Call 2), valid generated candidates are safely persisted to Neon DB before returning HTTP 429 to pause the batch queue. On explicit retry, the engine resumes assessment directly on the preserved candidates, saving API calls, tokens, and latency.
+4. **Exact Project Origin Validation (No Wildcards)**: All `*.vercel.app` wildcard allowances have been eliminated. State-changing requests are validated strictly against exact derived Vercel project deployment origins, configured domains, and same-origin calls.
+5. **Database Connection Pooling**: Ephemeral serverless lambdas must connect via `DATABASE_URL` (Neon Pooler) with `NullPool` to avoid exhausting connection limits.
+6. **Intra-Episode Continuous Clips**: Promo candidates are continuous intervals within single episodes. Cross-episode montages are deferred to future milestones.
+
+### 5. Deployed Smoke-Test Sequence
+
+Verify the live deployment on Vercel using this 6-step test sequence:
+
+1. **Ingest & Inspect**: Navigate to your deployed Vercel URL (`https://your-app.vercel.app`). Upload a script pack (`.txt` or `.zip`). Verify parsed episode cards appear in the sidebar.
+2. **Save Run**: Click **"Save Run"**. Verify a Run ID badge appears in the header and all episodes are marked `pending`.
+3. **Per-Episode Analysis**: Click **"Find Promos"** on Episode 1. Verify candidate cards appear with duration (20–60s), hook badges, cliffhanger cues, and editorial rubrics.
+4. **Refresh & Resume**: Refresh the browser page (`F5`). Click **"Saved Runs"** in the header. Select your run and click **"Resume Run"**. Verify the run and all previously analyzed candidates reload instantly from Neon DB.
+5. **Session Isolation**: Open an Incognito/Private window. Visit `https://your-app.vercel.app` and click **"Saved Runs"**. Verify no saved runs from your previous browser session are visible (cross-session isolation).
+6. **Export**: In your original window, click **"Show Top Promos"**, then click **"CSV Shortlist"** and **"Raw Audit (JSON)"**. Verify both files download and contain complete candidate data.
+
 ---
 
 ## Test Suite Coverage
 
-- **41 Backend Pytest Tests (`PYTHONPATH=backend pytest backend/tests`)**:
+- **51 Backend Pytest Tests (`PYTHONPATH=backend:. pytest backend/tests`)**:
   - Timestamp conversions & fractional math.
   - Screenplay format parsing (UTF-8, BOM, CRLF, multiline text, speaker/subtext parsing).
   - Safe archive decompression, path traversal security, and macOS metadata filtering.
@@ -191,8 +255,9 @@ Open `http://localhost:5173` in your browser.
   - Missing credentials and quota error handling.
   - Dual-call AI pipeline with batched rubric assessment.
   - Session security: HttpOnly cookie secret, SHA-256 server hash, origin validation for state-changing requests, and strict ownership isolation.
-  - Atomic per-episode claims, 120s bounded lease expiry, duplicate claim rejection, and stale-attempt save rejection.
+  - Atomic per-episode claims, 180s bounded lease expiry, duplicate claim rejection, and stale-attempt save rejection.
   - Quota pause error handling, unassessed candidate filtering, deterministic 5-key tie-breaker, and provisional ranking metadata.
+  - Vercel readiness: entrypoint export, exact project preview origin allowance, untrusted origin rejection, 4.4MB payload guards, quota candidate persistence, resumed assessment retry, 90s pipeline deadline safety margin, and SPA static asset rewrites.
 - **Live Neon PostgreSQL Integration Suite (`python backend/tests/verify_neon_integration.py`)**:
   - Verified live against Neon cloud database: run creation with session hash, cross-session isolation, atomic claim/lease issuance, duplicate claim conflict rejection, stale attempt rejection, valid attempt persistence, provisional coverage calculation, and automated cleanup.
 - **2 Frontend Tests (`vitest run`)**:

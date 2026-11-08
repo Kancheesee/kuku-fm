@@ -6,6 +6,7 @@ from app.api.health import router as health_router
 from app.api.ingest import router as ingest_router
 from app.api.promos import router as promos_router
 from app.api.runs import router as runs_router
+from app.core.session import get_trusted_origins
 
 app = FastAPI(
     title="Kuku Promo Studio API",
@@ -13,22 +14,11 @@ app = FastAPI(
     version="0.2.0",
 )
 
-# CORS setup for local development and web previews
-cors_origins_env = os.environ.get("CORS_ORIGINS", "")
-origins = [
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-]
-if cors_origins_env:
-    for o in cors_origins_env.split(","):
-        if o.strip() and o.strip() not in origins:
-            origins.append(o.strip())
-
+# CORS setup derived from exact trusted origins (local dev, configured domains, trusted Vercel URLs)
+# Wildcards for *.vercel.app are intentionally omitted to prevent cross-origin abuse.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=list(get_trusted_origins()),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

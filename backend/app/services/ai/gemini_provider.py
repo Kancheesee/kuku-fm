@@ -28,8 +28,8 @@ from app.services.ai.prompts import ASSESSMENT_PROMPT_VERSION, PROMPT_VERSION
 load_dotenv(".env")
 
 DEFAULT_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite")
-MAX_RETRIES = 2
-REQUEST_TIMEOUT_SECONDS = 35
+MAX_RETRIES = 1
+REQUEST_TIMEOUT_SECONDS = 25
 
 
 class PromoGenerationPayload(BaseModel):
@@ -61,7 +61,15 @@ class GeminiProvider(AIProvider):
         if self._client is None:
             try:
                 from google import genai
-                self._client = genai.Client(api_key=self.api_key)
+                from google.genai import types
+
+                # Bound SDK-level timeout and restrict internal retries to 1 attempt
+                # so our application loop deterministically controls backoff and total duration.
+                http_opts = types.HttpOptions(
+                    timeout=REQUEST_TIMEOUT_SECONDS * 1000,
+                    retry_options=types.HttpRetryOptions(attempts=1),
+                )
+                self._client = genai.Client(api_key=self.api_key, http_options=http_opts)
             except Exception as e:
                 raise AIProviderError(f"Failed to initialize Google GenAI client: {e}")
         return self._client

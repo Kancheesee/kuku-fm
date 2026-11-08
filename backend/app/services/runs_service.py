@@ -16,7 +16,7 @@ from app.schemas.runs import (
     ShowWideRankingResponse,
 )
 from app.services.ai.base import AIProvider, AIQuotaExceededError
-from app.services.ai.orchestrator import analyze_episode_for_promos
+from app.services.ai.orchestrator import analyze_episode_for_promos, assess_existing_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -269,7 +269,7 @@ def claim_episode_for_analysis(
     run_id: str,
     episode_id: str,
     session_hash: Optional[str] = None,
-    lease_duration_seconds: int = 120,
+    lease_duration_seconds: int = 180,
 ) -> Tuple[models.EpisodeRecord, str, int]:
     """
     Atomically claim an episode for analysis within a bounded lease.
@@ -337,10 +337,13 @@ def save_episode_analysis_result(
     lease_token: str,
     attempt_number: int,
     result: PromoAnalysisResponse,
+    status: str = "completed",
+    error_message: Optional[str] = None,
 ) -> None:
     """
     Atomically persist analysis result, strictly validating attempt ownership and lease token.
     Stops late/stale attempts from overwriting newer results.
+    Preserves candidate records and analysis_result_json even on quota/assessment failure.
     """
     ep = (
         db.query(models.EpisodeRecord)
@@ -360,9 +363,9 @@ def save_episode_analysis_result(
             f"Stale attempt {attempt_number} rejected; lease expired or was claimed by another worker."
         )
 
-    ep.analysis_status = "completed"
+    ep.analysis_status = status
     ep.analysis_result_json = result.model_dump()
-    ep.error_message = None
+    ep.error_message = error_message
     ep.lease_token = None
     ep.lease_expires_at = None
 
@@ -444,11 +447,15 @@ def analyze_episode(
     session_hash: Optional[str] = None,
     provider: Optional[AIProvider] = None,
     model_override: Optional[str] = None,
+    resume_assessment_if_possible: bool = True,
 ) -> PromoAnalysisResponse:
     """
     Analyze a single episode within a saved run.
     1. Atomic lease claim (DB transaction 1).
     2. AI discovery (runs OUTSIDE database transactions).
+       - If valid generated candidates already exist from prior interrupted assessment,
+         resumes assessment to conserve tokens and API quota.
+       - If assessment hits quota, persists candidates and generation output before re-raising.
     3. Atomic save with stale-attempt verification (DB transaction 2).
     """
     # 1. Atomic claim
@@ -479,23 +486,82 @@ def analyze_episode(
     )
 
     # 2. AI execution OUTSIDE database transactions
-    try:
-        result = analyze_episode_for_promos(
-            episode=episode_schema,
-            provider=provider,
-            model_override=model_override,
-        )
-    except Exception as e:
-        logger.error(f"Failed to analyze episode {episode_id} in run {run_id}: {e}")
-        record_episode_failure(
-            db=db,
-            run_id=run_id,
-            episode_id=episode_id,
-            lease_token=lease_token,
-            attempt_number=attempt_num,
-            error_message=str(e),
-        )
-        raise
+    resumed = False
+    result: Optional[PromoAnalysisResponse] = None
+
+    if resume_assessment_if_possible and ep_record.analysis_result_json:
+        try:
+            existing_resp = PromoAnalysisResponse.model_validate(ep_record.analysis_result_json)
+            if existing_resp.candidates and existing_resp.metadata.get("assessment_status") == "unavailable":
+                logger.info(f"Resuming assessment for episode {episode_id} with {len(existing_resp.candidates)} existing candidates.")
+                resumed = True
+                result = assess_existing_candidates(
+                    episode=episode_schema,
+                    existing_response=existing_resp,
+                    provider=provider,
+                    model_override=model_override,
+                )
+        except AIQuotaExceededError as qe:
+            logger.warning(f"Quota exhausted while resuming assessment for episode {episode_id}: {qe}")
+            if qe.partial_result:
+                save_episode_analysis_result(
+                    db=db,
+                    run_id=run_id,
+                    episode_id=episode_id,
+                    lease_token=lease_token,
+                    attempt_number=attempt_num,
+                    result=qe.partial_result,
+                    status="failed",
+                    error_message=str(qe),
+                )
+            raise
+        except Exception as exc:
+            logger.warning(f"Resuming assessment failed, falling back to full discovery: {exc}")
+            resumed = False
+
+    if not resumed:
+        try:
+            result = analyze_episode_for_promos(
+                episode=episode_schema,
+                provider=provider,
+                model_override=model_override,
+            )
+        except AIQuotaExceededError as qe:
+            logger.warning(f"Quota exceeded during episode analysis: {qe}")
+            if qe.partial_result:
+                # Quota exhausted during assessment (Call 2):
+                # Persist valid candidates and generation output before re-raising so batch can pause safely
+                save_episode_analysis_result(
+                    db=db,
+                    run_id=run_id,
+                    episode_id=episode_id,
+                    lease_token=lease_token,
+                    attempt_number=attempt_num,
+                    result=qe.partial_result,
+                    status="failed",
+                    error_message=str(qe),
+                )
+            else:
+                record_episode_failure(
+                    db=db,
+                    run_id=run_id,
+                    episode_id=episode_id,
+                    lease_token=lease_token,
+                    attempt_number=attempt_num,
+                    error_message=str(qe),
+                )
+            raise
+        except Exception as e:
+            logger.error(f"Failed to analyze episode {episode_id} in run {run_id}: {e}")
+            record_episode_failure(
+                db=db,
+                run_id=run_id,
+                episode_id=episode_id,
+                lease_token=lease_token,
+                attempt_number=attempt_num,
+                error_message=str(e),
+            )
+            raise
 
     # 3. Save result with attempt validation
     save_episode_analysis_result(
@@ -505,6 +571,7 @@ def analyze_episode(
         lease_token=lease_token,
         attempt_number=attempt_num,
         result=result,
+        status="completed",
     )
     return result
 
@@ -544,8 +611,11 @@ def retry_episode(
     session_hash: Optional[str] = None,
     provider: Optional[AIProvider] = None,
     model_override: Optional[str] = None,
+    resume_assessment_if_possible: bool = True,
 ) -> PromoAnalysisResponse:
-    """Explicitly retry a failed episode, incrementing retry_count."""
+    """Explicitly retry a failed episode, incrementing retry_count.
+    Resumes assessment if valid candidates were preserved during prior quota exhaustion,
+    or runs complete generation if no candidates exist."""
     ep = (
         db.query(models.EpisodeRecord)
         .filter(models.EpisodeRecord.run_id == run_id, models.EpisodeRecord.id == episode_id)
@@ -569,6 +639,7 @@ def retry_episode(
         session_hash=session_hash,
         provider=provider,
         model_override=model_override,
+        resume_assessment_if_possible=resume_assessment_if_possible,
     )
 
 

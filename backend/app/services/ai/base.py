@@ -37,7 +37,10 @@ class AIMissingCredentialsError(AIProviderError):
 
 class AIQuotaExceededError(AIProviderError):
     """API rate limit or quota exceeded."""
-    pass
+
+    def __init__(self, message: str, partial_result: Optional[Any] = None):
+        super().__init__(message)
+        self.partial_result = partial_result
 
 
 class AIModelNotFoundError(AIProviderError):

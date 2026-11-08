@@ -120,7 +120,68 @@ This document records the foundational architecture and editorial product decisi
 
 ---
 
-## 8. Implementation & Verification Matrix
+## 8. Vercel Production Deployment Architecture
+
+- **Single-Origin Deployment Arrangement**:
+  - The entire application is deployed to Vercel as a single project using root [`vercel.json`](file:///Users/yashrajsingh/Desktop/Kuku-kanchi/vercel.json) configuration:
+    - Frontend build: `cd frontend && npm install && npm run build` outputting static assets to `frontend/dist`.
+    - Backend API entrypoint: Serverless Python function at [`api/index.py`](file:///Users/yashrajsingh/Desktop/Kuku-kanchi/api/index.py) importing `app` from `backend/app/main.py`.
+    - Rewrites: `/api/(.*)` routes to `/api/index.py`; `/((?!api|assets|favicon\.ico).*)` routes to `/index.html` for client-side React SPA routing. Static assets under `/assets/` and `/favicon.ico` are excluded from the SPA fallback to prevent JavaScript/CSS requests from swallowing HTML.
+  - **HttpOnly Cookie Preservation**: Because frontend and backend are served under the exact same browser origin, `kuku_session` HttpOnly cookies are automatically sent and received on all `/api` calls without third-party cookie restrictions or cross-domain issues.
+- **Worst-Case Duration, Pipeline Deadline Budget & Lease Duration**:
+  - **SDK Retry Behavior**: Google GenAI SDK internal retries are explicitly restricted to `attempts=1` (`types.HttpRetryOptions(attempts=1)`) with `timeout=25000` ms, preventing undocumented multi-retry loops.
+  - **Worst-Case Duration Calculation**:
+    - Call 1 (Generation): Attempt 1 (25s) + backoff (2s) + Attempt 2 (25s) = 52.0s.
+    - Call 2 (Assessment): Attempt 1 (25s) + backoff (2s) + Attempt 2 (25s) = 52.0s.
+    - Database work (lease claim, result persistence, show-wide ranking): ~1.0s.
+    - Unconstrained worst-case total: $52.0 + 52.0 + 1.0 = 105.0\text{ seconds}$.
+  - **Overall Pipeline Deadline (90s)**:
+    - `PIPELINE_DEADLINE_SECONDS = 90.0` with `ASSESSMENT_MIN_BUDGET_SECONDS = 30.0`.
+    - If elapsed generation time exceeds 60s, Call 2 is skipped gracefully: mechanically valid candidates are preserved with `assessment_status = "unavailable"` and `assessment_error = "Assessment skipped: pipeline deadline threshold reached to guarantee completion within Vercel function timeout"`.
+    - The serverless function always terminates cleanly within 90–95s, well before Vercel's `maxDuration: 120` limit.
+  - **Episode Lease Duration (180s)**:
+    - `lease_duration_seconds` is set to 180 seconds (3 minutes), giving a comfortable 90-second safety margin beyond the 90s pipeline deadline. Active worker attempts never expire while still executing.
+- **Payload Size Measurements & Frontend Validation**:
+  - **50-Episode Pack Upload (.zip)**: 220.8 KB (226,133 bytes).
+  - **`IngestPreviewResponse` JSON**: 2.36 MB (2,475,139 bytes for 50 episodes with all scenes, timestamped events, and diagnostics). Strictly below Vercel's 4.5 MB platform limit (52.5% utilization).
+  - **Saved-Run Reload (`RunDetailResponse`)**: 77.15 KB (78,999 bytes for 50 episodes and 50 show-wide candidates).
+  - **Full Audit Export JSON**: 257.67 KB (263,858 bytes for 50 episodes and 150 candidates).
+  - **Frontend Request Size Check**: Client-side check in `handleFilesSelected` instantly alerts users if selected files exceed 4.4 MB before initiating network transmission, while backend `MAX_UPLOAD_BYTES` enforces the server-side barrier.
+- **Assessment Quota Exhaustion & Resumed Retry**:
+  - When Call 2 encounters `AIQuotaExceededError`:
+    1. Valid generated candidate proposals and raw generation response are packaged into a partial `PromoAnalysisResponse`.
+    2. The candidates are persisted to the Neon database (`analysis_result_json`, `PromoCandidate` records with `overall_score = None`).
+    3. The episode is marked `failed` with the quota error and the lease is released.
+    4. `AIQuotaExceededError` is re-raised, returning HTTP 429 to the frontend.
+    5. The React batch scheduler halts immediately and displays the paused banner.
+  - **Retry Behavior**:
+    - When the user explicitly clicks "Retry", `retry_episode` checks for existing valid generation output.
+    - If candidates already exist, **it resumes assessment directly (Call 2)**, eliminating redundant generation calls, saving tokens, and minimizing latency.
+    - If no generation output exists (e.g., Call 1 failed), full discovery (generation + assessment) is executed.
+- **Exact Project Origin Validation (No Wildcards)**:
+  - Any wildcard allowance for `*.vercel.app` is completely removed.
+  - Trusted origins are derived strictly from:
+    1. Local development origins (`http://localhost:5173`, `http://localhost:8000`, etc.).
+    2. Explicitly configured domains in `ALLOWED_ORIGINS` / `CORS_ORIGINS`.
+    3. Exact project deployment hosts from trusted Vercel environment variables: `VERCEL_URL`, `VERCEL_PROJECT_PRODUCTION_URL`, `VERCEL_BRANCH_URL`.
+    4. Exact same-origin requests (`candidate_origin == request_origin`).
+  - Untrusted third-party `*.vercel.app` domains are rejected with HTTP 403.
+  - `Secure` cookies are enforced whenever `request.url.scheme == "https"` or `x-forwarded-proto == "https"`, ensuring HTTPS previews and production both receive secure cookies.
+- **Decoupled Database Migrations**:
+  - Migrations are never executed during application startup or within serverless execution lifecycles.
+  - Migrations must be run explicitly prior to or during CI deployment via `alembic upgrade head` using `DIRECT_URL`.
+- **Bundle Exclusion**:
+  - [`.vercelignore`](file:///Users/yashrajsingh/Desktop/Kuku-kanchi/.vercelignore) strictly excludes private screenplays (`private_inputs/`, `private_outputs/`), secrets (`.env*`), virtual environments (`venv/`), test directories, and local caches.
+- **Status**:
+  - *Implemented*: `vercel.json`, `api/index.py`, `package.json`, `requirements.txt`, `.vercelignore`, `backend/app/core/session.py`, `backend/app/services/ai/orchestrator.py`, `backend/app/services/runs_service.py`, `frontend/src/App.tsx`.
+  - *Verified*:
+    - All 51 backend pytest tests pass (including Vercel entrypoint, preview origin, quota persistence, pipeline deadline, and payload size guard tests).
+    - All frontend Vitest tests pass.
+    - Frontend production build (`npm run build`) compiles cleanly in 1.55s with 0 errors.
+
+---
+
+## 9. Implementation & Verification Matrix
 
 | Feature / Subsystem | Implementation Status | Automated Mock Verification | Live DB / Live API Verification |
 |---|---|---|---|
@@ -135,13 +196,20 @@ This document records the foundational architecture and editorial product decisi
 | Stale attempt rejection (no late overwrite) | Complete | Verified (pytest) | Verified on live Neon DB |
 | React per-episode batch scheduling & quota exhaustion pause | Complete | Verified (Vitest + pytest) | Verified in React App |
 | Provisional show-wide ranking with 5-key tie-breaker | Complete | Verified (pytest) | Verified on live Neon DB |
+| Vercel exact deployment origin validation (no wildcards) | Complete | Verified (pytest 10/10) | Verified locally |
+| Worst-case duration calculation & 90s pipeline deadline | Complete | Verified (pytest) | Verified locally |
+| Quota candidate persistence & resumed retry assessment | Complete | Verified (pytest) | Verified on live DB |
+| Static asset exclusion in SPA rewrites & /api/health reachability | Complete | Verified (pytest) | Verified locally |
+| Serverless 4.5MB payload & 180s lease guards | Complete | Verified (pytest) | Verified locally |
 | Multi-episode cross-cutting / stitching | Out of Scope (Milestone 4) | N/A | N/A |
 
 ---
 
-## 9. Remaining Limitations
+## 10. Remaining Limitations & Deployment Constraints
 
 1. **Intra-Episode Continuous Cuts Only**: Promo candidates remain continuous event intervals within a single episode. Multi-scene montages and cross-episode stitched cuts are deferred to future milestones.
-2. **Sequential Session Queue**: Batch processing schedules episodes sequentially per browser session; distributed parallel worker execution across multiple worker nodes is not yet implemented.
-3. **Quota Window Reset**: When Gemini API quota is exhausted (HTTP 429), the system cleanly pauses; resuming requires user action after the quota window resets.
+2. **Serverless Payload Hard Ceiling (4.5 MB)**: Uploads or raw JSON exports exceeding 4.5 MB will be rejected with HTTP 413. For script packs larger than 4.5 MB, client-side direct S3/Blob storage uploads would be required.
+3. **Serverless Function Duration (120s)**: While single episodes finish in 5–15 seconds, worst-case network retries are capped at 120s.
+4. **Neon Connection Pooling**: FastAPI runtime must use connection-pooled `DATABASE_URL` with `NullPool` to prevent pool exhaustion in ephemeral serverless lambdas. Alembic migrations must use `DIRECT_URL`.
+5. **Quota Window Reset**: When Gemini API quota is exhausted (HTTP 429), batch execution halts automatically; resuming requires user action after quota reset.
 

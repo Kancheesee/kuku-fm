@@ -1,0 +1,35 @@
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Sensitive data and private input/output screenplays
+private_inputs/
+private_outputs/
+*.zip
+*.tar.gz
+
+# Environment secrets and credentials
+.env
+.env.*
+!.env.example
+
+# Git metadata
+.git/
+.github/
+
+# Test caches and test suites
+.pytest_cache/
+__pycache__/
+*.py[cod]
+backend/tests/
+frontend/src/test/
+
+# Dependencies and caches
+node_modules/
+frontend/node_modules/
+.npm/
+
+# Documentation and scratch files
+docs/
+
