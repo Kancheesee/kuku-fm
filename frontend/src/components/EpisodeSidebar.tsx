@@ -1,18 +1,28 @@
 import React, { useState } from 'react';
 import { Episode } from '../types';
 import { formatDurationHuman } from '../lib/utils';
-import { Search, AlertTriangle, FileText } from 'lucide-react';
+import { Search, AlertTriangle, FileText, CheckCircle2, RefreshCw, AlertCircle, RotateCcw } from 'lucide-react';
+
+export interface EpisodeStatusInfo {
+  status: 'pending' | 'analyzing' | 'completed' | 'failed' | 'paused';
+  retry_count?: number;
+  error?: string | null;
+}
 
 interface EpisodeSidebarProps {
   episodes: Episode[];
   selectedEpisodeId: string | null;
   onSelectEpisode: (id: string) => void;
+  episodeStatuses?: Record<string, EpisodeStatusInfo>;
+  onRetryEpisode?: (episodeId: string) => void;
 }
 
 export const EpisodeSidebar: React.FC<EpisodeSidebarProps> = ({
   episodes,
   selectedEpisodeId,
   onSelectEpisode,
+  episodeStatuses,
+  onRetryEpisode,
 }) => {
   const [filterText, setFilterText] = useState('');
 
@@ -50,21 +60,49 @@ export const EpisodeSidebar: React.FC<EpisodeSidebarProps> = ({
           filteredEpisodes.map((ep) => {
             const isSelected = ep.id === selectedEpisodeId;
             const issueCount = ep.warnings.length;
+            const statusInfo = episodeStatuses ? episodeStatuses[ep.id] : undefined;
 
             return (
-              <button
+              <div
                 key={ep.id}
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    onSelectEpisode(ep.id);
+                  }
+                }}
                 onClick={() => onSelectEpisode(ep.id)}
-                className={`w-full text-left p-3.5 transition-colors flex flex-col gap-1 focus:outline-none focus:ring-1 focus:ring-burnt-600 ${
+                className={`w-full text-left p-3.5 transition-colors flex flex-col gap-1 cursor-pointer focus:outline-none focus:ring-1 focus:ring-burnt-600 ${
                   isSelected
                     ? 'bg-burnt-50/70 border-l-4 border-burnt-700 pl-[10px]'
                     : 'hover:bg-paper-200/60'
                 }`}
               >
                 <div className="flex items-center justify-between">
-                  <span className={`text-xs font-semibold ${isSelected ? 'text-burnt-800' : 'text-charcoal'}`}>
-                    {ep.episode_number !== null ? `Episode ${ep.episode_number}` : 'Untitled Episode'}
-                  </span>
+                  <div className="flex items-center space-x-1.5">
+                    <span className={`text-xs font-semibold ${isSelected ? 'text-burnt-800' : 'text-charcoal'}`}>
+                      {ep.episode_number !== null ? `Episode ${ep.episode_number}` : 'Untitled Episode'}
+                    </span>
+                    {/* Status badge */}
+                    {statusInfo && statusInfo.status === 'completed' && (
+                      <span title="Analysis completed and saved" className="flex items-center">
+                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 flex-shrink-0" />
+                      </span>
+                    )}
+                    {statusInfo && statusInfo.status === 'analyzing' && (
+                      <span title="Analyzing promos..." className="flex items-center">
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin text-burnt-700 flex-shrink-0" />
+                      </span>
+                    )}
+                    {statusInfo && statusInfo.status === 'failed' && (
+                      <span title={statusInfo.error || 'Analysis failed'} className="flex items-center">
+                        <AlertCircle className="w-3.5 h-3.5 text-rose-600 flex-shrink-0" />
+                      </span>
+                    )}
+                  </div>
+
                   <div className="flex items-center space-x-1.5">
                     {issueCount > 0 && (
                       <span
@@ -81,16 +119,32 @@ export const EpisodeSidebar: React.FC<EpisodeSidebarProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center space-x-1 text-[11px] text-charcoal-subtle truncate">
-                  <FileText className="w-3 h-3 flex-shrink-0" />
-                  <span className="truncate">{ep.filename}</span>
+                <div className="flex items-center justify-between text-[11px] text-charcoal-subtle">
+                  <div className="flex items-center space-x-1 truncate max-w-[170px]">
+                    <FileText className="w-3 h-3 flex-shrink-0" />
+                    <span className="truncate">{ep.filename}</span>
+                  </div>
+
+                  {statusInfo && statusInfo.status === 'failed' && onRetryEpisode && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onRetryEpisode(ep.id);
+                      }}
+                      className="inline-flex items-center space-x-0.5 text-[10px] font-semibold text-rose-700 hover:text-rose-900 bg-rose-100 px-1.5 py-0.5 rounded border border-rose-200 transition-colors"
+                      title="Retry analysis for this episode"
+                    >
+                      <RotateCcw className="w-2.5 h-2.5" />
+                      <span>Retry</span>
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex items-center justify-between text-[10px] text-charcoal-muted mt-0.5">
                   <span>{ep.scenes.length} scene{ep.scenes.length === 1 ? '' : 's'}</span>
                   <span>{ep.events.length} timed events</span>
                 </div>
-              </button>
+              </div>
             );
           })
         )}
@@ -98,10 +152,9 @@ export const EpisodeSidebar: React.FC<EpisodeSidebarProps> = ({
 
       {/* Episode count footer */}
       <div className="p-2.5 border-t border-paper-300 bg-paper-100 text-[11px] text-charcoal-subtle flex justify-between items-center">
-        <span>{filteredEpisodes.length} shown</span>
-        <span>{episodes.length} total</span>
+        <span>{episodes.length} episodes total</span>
+        <span>{filteredEpisodes.length} visible</span>
       </div>
     </aside>
   );
 };
-

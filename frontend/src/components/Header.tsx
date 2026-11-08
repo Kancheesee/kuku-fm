@@ -1,5 +1,17 @@
 import React from 'react';
-import { Film, Sparkles, RefreshCw, AlertCircle, CheckCircle2, FileSpreadsheet, FileCode } from 'lucide-react';
+import {
+  Film,
+  Sparkles,
+  RefreshCw,
+  AlertCircle,
+  CheckCircle2,
+  FileSpreadsheet,
+  FileCode,
+  Database,
+  Play,
+  Pause,
+  Save,
+} from 'lucide-react';
 
 interface HeaderProps {
   hasLoadedScripts: boolean;
@@ -11,6 +23,17 @@ interface HeaderProps {
   hasPromoResults: boolean;
   onExportCsv: () => void;
   onExportJson: () => void;
+  // Milestone 3 Persistence Props
+  currentRunName?: string | null;
+  currentRunStatus?: string | null;
+  hasSavedRun?: boolean;
+  onOpenSavedRuns: () => void;
+  onSaveRun?: () => void;
+  isSavingRun?: boolean;
+  onAnalyzeAll?: () => void;
+  isBatchRunning?: boolean;
+  onPauseRun?: () => void;
+  onResumeRun?: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -23,6 +46,16 @@ export const Header: React.FC<HeaderProps> = ({
   hasPromoResults,
   onExportCsv,
   onExportJson,
+  currentRunName,
+  currentRunStatus,
+  hasSavedRun,
+  onOpenSavedRuns,
+  onSaveRun,
+  isSavingRun,
+  onAnalyzeAll,
+  isBatchRunning,
+  onPauseRun,
+  onResumeRun,
 }) => {
   return (
     <header className="border-b border-paper-300 bg-paper-50 px-6 py-3 sticky top-0 z-30 flex items-center justify-between shadow-xs">
@@ -36,26 +69,66 @@ export const Header: React.FC<HeaderProps> = ({
               Kuku Promo Studio
             </h1>
             <span className="text-[11px] font-medium tracking-wide uppercase px-1.5 py-0.5 rounded bg-burnt-100 text-burnt-800 border border-burnt-200">
-              Milestone 2: Gemini Promo Engine
+              Milestone 3: Resumable Persistence
             </span>
           </div>
-          <p className="text-xs text-charcoal-subtle">Editorial Screenplay Ingestion & Continuous Promo Candidate Discovery</p>
+          <p className="text-xs text-charcoal-subtle">
+            {currentRunName ? (
+              <span className="flex items-center space-x-1.5 text-burnt-800 font-medium">
+                <span>Active Run: {currentRunName}</span>
+                {currentRunStatus && (
+                  <span className="text-[10px] uppercase font-bold px-1.5 py-0.2 rounded bg-paper-200 text-charcoal">
+                    {currentRunStatus}
+                  </span>
+                )}
+              </span>
+            ) : (
+              'Screenplay Ingestion, Continuous Promo Candidate Discovery & Neon DB Persistence'
+            )}
+          </p>
         </div>
       </div>
 
       <div className="flex items-center space-x-2.5">
+        {/* Saved Runs Button */}
+        <button
+          onClick={onOpenSavedRuns}
+          className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md text-xs font-semibold bg-paper-200 hover:bg-paper-300 text-charcoal border border-paper-300 transition-colors shadow-xs"
+          title="Browse saved runs in Neon database"
+        >
+          <Database className="w-3.5 h-3.5 text-burnt-700" />
+          <span>Saved Runs</span>
+        </button>
+
+        {/* Save Run Button if scripts loaded but not yet persisted */}
+        {hasLoadedScripts && !hasSavedRun && onSaveRun && (
+          <button
+            onClick={onSaveRun}
+            disabled={isSavingRun}
+            className="inline-flex items-center space-x-1 px-3 py-1.5 rounded-md text-xs font-semibold bg-burnt-50 hover:bg-burnt-100 text-burnt-800 border border-burnt-300 transition-colors shadow-xs"
+            title="Persist this screenplay run to Neon database"
+          >
+            {isSavingRun ? (
+              <RefreshCw className="w-3.5 h-3.5 animate-spin text-burnt-700" />
+            ) : (
+              <Save className="w-3.5 h-3.5 text-burnt-700" />
+            )}
+            <span>Save Run</span>
+          </button>
+        )}
+
         {/* Backend health status indicator */}
         <div className="hidden sm:flex items-center space-x-1.5 text-xs text-charcoal-muted px-2.5 py-1.5 rounded bg-paper-200 border border-paper-300">
           {isBackendConnected === true && (
             <>
               <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
-              <span>Backend Ready</span>
+              <span>Neon DB Ready</span>
             </>
           )}
           {isBackendConnected === false && (
             <>
               <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
-              <span>Backend Offline</span>
+              <span>Offline</span>
             </>
           )}
           {isBackendConnected === null && (
@@ -97,8 +170,39 @@ export const Header: React.FC<HeaderProps> = ({
           </div>
         )}
 
-        {/* Primary Find Promos Action Button */}
-        {hasLoadedScripts && (
+        {/* Batch Analyze All / Pause / Resume Controls for saved runs */}
+        {hasSavedRun && onAnalyzeAll && (
+          <div className="flex items-center space-x-1.5">
+            {isBatchRunning ? (
+              <button
+                onClick={onPauseRun}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-amber-100 text-amber-900 border border-amber-300 hover:bg-amber-200 transition-all shadow-xs"
+              >
+                <Pause className="w-3.5 h-3.5 text-amber-700" />
+                <span>Pause Batch</span>
+              </button>
+            ) : currentRunStatus === 'paused' ? (
+              <button
+                onClick={onResumeRun}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-700 text-white hover:bg-emerald-800 transition-all shadow-xs"
+              >
+                <Play className="w-3.5 h-3.5" />
+                <span>Resume Batch</span>
+              </button>
+            ) : (
+              <button
+                onClick={onAnalyzeAll}
+                className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-burnt-700 text-white hover:bg-burnt-800 transition-all shadow-xs"
+              >
+                <Play className="w-3.5 h-3.5 text-burnt-200" />
+                <span>Analyze All</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Primary Find Promos Action Button (Single Episode) */}
+        {hasLoadedScripts && !isBatchRunning && (
           <button
             onClick={onFindPromos}
             disabled={isAnalyzingPromos}
@@ -111,12 +215,19 @@ export const Header: React.FC<HeaderProps> = ({
             {isAnalyzingPromos ? (
               <>
                 <RefreshCw className="w-3.5 h-3.5 animate-spin text-burnt-700" />
-                <span>Analyzing Ep {selectedEpisodeNumber ?? ''}...</span>
+                <span>
+                  Analyzing Ep {selectedEpisodeNumber !== null && selectedEpisodeNumber !== undefined ? selectedEpisodeNumber : ''}...
+                </span>
               </>
             ) : (
               <>
                 <Sparkles className="w-3.5 h-3.5 text-burnt-200" />
-                <span>Find Promos (Ep {selectedEpisodeNumber ?? ''})</span>
+                <span>
+                  Find Promos
+                  {selectedEpisodeNumber !== null && selectedEpisodeNumber !== undefined
+                    ? ` (Ep ${selectedEpisodeNumber})`
+                    : ''}
+                </span>
               </>
             )}
           </button>

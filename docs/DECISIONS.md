@@ -81,15 +81,67 @@ This document records the foundational architecture and editorial product decisi
 
 ---
 
-## 7. Implementation & Verification Matrix
+## 7. Persistence, Security & Resumable Batch Processing (Milestone 3)
 
-| Feature / Subsystem | Implementation Status | Automated Mock Verification | Live API Verification |
+- **Dual-Connection Neon PostgreSQL Architecture**:
+  - `DIRECT_URL`: Direct unpooled endpoint (`ep-dawn-hill-bdql779c.c-8.us-east-2.aws.neon.tech`) used exclusively for Alembic schema migrations (`001_initial_schema`, `002_milestone3_features`, `003_session_and_claims`).
+  - `DATABASE_URL`: Connection-pooled endpoint (`ep-dawn-hill-bdql779c-pooler.c-8.us-east-2.aws.neon.tech`) used by the FastAPI runtime with SQLAlchemy 2, `psycopg` (v3), and `NullPool` to eliminate connection leaks in serverless/pooled environments.
+  - Automatic URL normalization ensures all URLs use `postgresql+psycopg://`.
+- **HttpOnly Cookie Session Security & Origin Validation**:
+  - Replaced legacy `localStorage`/`X-Session-ID` with server-issued cryptographically random 256-bit session secret in an `HttpOnly` cookie (`kuku_session`, `SameSite=lax`, `Secure` in production).
+  - Only the SHA-256 digest (`session_hash`) is stored in the database.
+  - Request origin validation enforces CSRF protection on all state-changing endpoints (`POST`, `PUT`, `DELETE`, `PATCH`).
+  - Strict session ownership is enforced across every run endpoint (`GET /api/runs`, `GET /api/runs/{id}`, `/analyze`, `/ranking`, `/export/*`). Requests without matching session receive 404 to prevent resource enumeration.
+  - **Handling of Existing Development Runs**: Development runs created prior to migration `003_session_and_claims` retain their legacy `browser_session_id` and are neither exposed nor reassigned; they remain deprecated in the database.
+- **Atomic Per-Episode Claims, Bounded Leases & Attempt Ownership**:
+  - **Atomic Claim (Transaction 1)**: `claim_episode_for_analysis` uses `with_for_update()` to inspect episode state. Rejects duplicate concurrent analysis (`LeaseConflictError` / HTTP 409). Automatically recovers abandoned `analyzing` states if `lease_expires_at` is in the past. Assigns unique `lease_token` (UUID hex), `lease_expires_at` (120s lease window), and increments `attempt_number`.
+  - **AI Isolation**: Gemini generation and assessment calls run completely **outside** database transactions.
+  - **Atomic Save (Transaction 2)**: `save_episode_analysis_result` verifies `lease_token` and `attempt_number`. Late or superseded attempts are rejected (`StaleAttemptError` / HTTP 409), preventing slow workers from overwriting newer results.
+- **Client-Side Batch Scheduling (React-Driven)**:
+  - Batch scheduling is coordinated in React, which issues separate, sequential per-episode requests (`POST /api/runs/{id}/episodes/{ep_id}/analyze`).
+  - No monolithic server-side loops or untracked background tasks.
+  - **Pause**: Halts the client loop immediately at episode boundary; run transitions to `paused`.
+  - **Resume**: Re-queries run status and schedules only `pending` episodes (skips completed and failed).
+  - **Quota Pause**: On HTTP 429 quota exhaustion, React immediately halts the batch queue, triggers run pause, and displays an actionable alert banner.
+  - **Explicit Retries**: Failed episodes require explicit user retry actions (`/episodes/{id}/retry`), preventing infinite retry loops.
+- **Show-Wide Candidate Ranking & Provisional Coverage**:
+  - Unassessed candidates (`overall_score is None`) are strictly excluded from scored rankings (`show_rank = None`).
+  - Scored candidates are ranked by a deterministic 5-key tie-breaker:
+    $$\text{overall\_score (DESC)} \to \text{duration\_ms (DESC)} \to \text{episode\_number (ASC)} \to \text{start\_ms (ASC)} \to \text{id (ASC)}$$
+  - Incomplete run rankings are labeled `Provisional` with completed/total episode coverage metrics.
+- **Status**:
+  - *Implemented*: `backend/app/db/`, `backend/app/api/runs.py`, `backend/app/core/session.py`, `backend/app/services/runs_service.py`, `frontend/src/App.tsx`, `frontend/src/components/ShowWideRankingView.tsx`.
+  - *Verified*:
+    - Alembic migration `003_session_and_claims` applied to live Neon DB.
+    - Live Neon PostgreSQL integration test (`verify_neon_integration.py`): verified session isolation, atomic lease claim, duplicate claim rejection, stale attempt rejection, and provisional ranking against live Neon DB.
+    - All 41 backend pytest tests pass.
+    - All frontend Vitest tests pass.
+    - Frontend production build (`npm run build`) compiles cleanly with 0 errors.
+
+---
+
+## 8. Implementation & Verification Matrix
+
+| Feature / Subsystem | Implementation Status | Automated Mock Verification | Live DB / Live API Verification |
 |---|---|---|---|
 | Screenplay ingestion & timestamping | Complete | Verified (pytest) | Verified (50-ep pack) |
 | Mechanical cut validation (dialogue / duration / 3s hook) | Complete | Verified (pytest) | Verified (synthetic + real) |
-| Prompt versioning & window annotation | Complete | Verified (pytest) | Live Ep 1 & Ep 2 (in progress) |
-| Batched model assessment & code ranking | Complete | Verified (pytest) | Live Ep 1 & Ep 2 (in progress) |
-| Assessment failure fallback | Complete | Verified (pytest) | Not triggered live |
-| Client race condition & upload invalidation | Complete | Verified (Vitest) | N/A (Frontend logic) |
-| Multi-episode cross-cutting / stitching | Out of Scope (Milestone 3+) | N/A | N/A |
+| Prompt versioning & window annotation | Complete | Verified (pytest) | Verified (Ep 1 & Ep 2 cached runs) |
+| Batched model assessment & code ranking | Complete | Verified (pytest) | Verified (Ep 1 & Ep 2 cached runs) |
+| Assessment failure fallback | Complete | Verified (pytest) | Verified (graceful degradation) |
+| Client race condition & upload invalidation | Complete | Verified (Vitest) | Verified (Vitest) |
+| HttpOnly cookie session isolation & CSRF origin validation | Complete | Verified (pytest) | Verified on live Neon DB |
+| Atomic per-episode claims, lease expiry & attempt ownership | Complete | Verified (pytest) | Verified on live Neon DB |
+| Stale attempt rejection (no late overwrite) | Complete | Verified (pytest) | Verified on live Neon DB |
+| React per-episode batch scheduling & quota exhaustion pause | Complete | Verified (Vitest + pytest) | Verified in React App |
+| Provisional show-wide ranking with 5-key tie-breaker | Complete | Verified (pytest) | Verified on live Neon DB |
+| Multi-episode cross-cutting / stitching | Out of Scope (Milestone 4) | N/A | N/A |
+
+---
+
+## 9. Remaining Limitations
+
+1. **Intra-Episode Continuous Cuts Only**: Promo candidates remain continuous event intervals within a single episode. Multi-scene montages and cross-episode stitched cuts are deferred to future milestones.
+2. **Sequential Session Queue**: Batch processing schedules episodes sequentially per browser session; distributed parallel worker execution across multiple worker nodes is not yet implemented.
+3. **Quota Window Reset**: When Gemini API quota is exhausted (HTTP 429), the system cleanly pauses; resuming requires user action after the quota window resets.
 

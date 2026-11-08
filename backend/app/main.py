@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.health import router as health_router
 from app.api.ingest import router as ingest_router
 from app.api.promos import router as promos_router
+from app.api.runs import router as runs_router
 
 app = FastAPI(
     title="Kuku Promo Studio API",
@@ -36,6 +37,7 @@ app.add_middleware(
 app.include_router(health_router, prefix="/api", tags=["health"])
 app.include_router(ingest_router, prefix="/api", tags=["ingest"])
 app.include_router(promos_router, prefix="/api", tags=["promos"])
+app.include_router(runs_router, prefix="/api", tags=["runs"])
 
 
 @app.get("/")

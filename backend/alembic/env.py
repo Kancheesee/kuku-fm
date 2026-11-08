@@ -7,8 +7,13 @@ from sqlalchemy import pool
 
 from alembic import context
 
+from dotenv import load_dotenv
+
 # Add backend directory to sys.path
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+
+# Load environment from project root .env
+load_dotenv(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), ".env"))
 
 from app.db.session import Base, get_database_url
 import app.db.models  # Ensure models are registered
@@ -28,6 +33,10 @@ def get_url():
     url = os.environ.get("DIRECT_URL") or get_database_url()
     if not url:
         return config.get_main_option("sqlalchemy.url")
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+psycopg://", 1)
+    elif url.startswith("postgresql://") and not url.startswith("postgresql+psycopg://"):
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
     return url
 
 

@@ -161,3 +161,65 @@ export interface PromoAnalysisResponse {
   raw_assessment_response?: string | null;
   raw_model_response?: string;
 }
+
+// Milestone 3 Persistence & Run Management Schemas
+export interface RunSummary {
+  id: string;
+  name: string;
+  status: 'created' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
+  browser_session_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  total_episodes: number;
+  completed_episodes: number;
+  failed_episodes: number;
+  promos_count: number;
+  metadata: Record<string, any>;
+}
+
+export interface EpisodeRecord {
+  id: string;
+  run_id: string;
+  internal_id: string;
+  episode_number?: number | null;
+  filename: string;
+  content_hash: string;
+  duration_ms: number;
+  analysis_status: 'pending' | 'analyzing' | 'completed' | 'failed' | 'paused';
+  analysis_result?: PromoAnalysisResponse | null;
+  error_message?: string | null;
+  retry_count: number;
+  scenes_count: number;
+  events_count: number;
+  warnings_count: number;
+}
+
+export interface RunDetail {
+  id: string;
+  name: string;
+  status: 'created' | 'ready' | 'running' | 'paused' | 'completed' | 'failed';
+  browser_session_id?: string | null;
+  session_hash?: string | null;
+  created_at: string;
+  updated_at: string;
+  total_episodes: number;
+  completed_episodes: number;
+  failed_episodes: number;
+  is_provisional?: boolean;
+  coverage_percentage?: number;
+  episodes: EpisodeRecord[];
+  show_ranking: PromoCandidate[];
+  metadata: Record<string, any>;
+}
+
+export interface ShowWideRankingResponse {
+  run_id: string;
+  run_name: string;
+  total_candidates: number;
+  is_provisional?: boolean;
+  completed_episodes?: number;
+  total_episodes?: number;
+  coverage_percentage?: number;
+  unassessed_candidates_count?: number;
+  candidates: PromoCandidate[];
+}
