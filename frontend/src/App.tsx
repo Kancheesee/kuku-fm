@@ -60,6 +60,8 @@ export const App: React.FC = () => {
   const selectedEpisodeIdRef = useRef<string | null>(null);
   const uploadEpochRef = useRef<number>(0);
   const batchCancelRef = useRef<boolean>(false);
+  // Track whether user deliberately navigated away during batch to avoid forcing show-ranking
+  const userNavigatedDuringBatchRef = useRef<boolean>(false);
 
   useEffect(() => {
     selectedEpisodeIdRef.current = selectedEpisodeId;
@@ -257,6 +259,7 @@ export const App: React.FC = () => {
   // Client-side sequential batch scheduler: React issues separate per-episode requests
   const runBatchScheduler = async (runId: string) => {
     batchCancelRef.current = false;
+    userNavigatedDuringBatchRef.current = false;
     setIsBatchRunning(true);
     setPromoError(null);
     setQuotaExhaustedMsg(null);
@@ -266,14 +269,16 @@ export const App: React.FC = () => {
         const freshRun = await getSavedRun(runId);
         setCurrentRun(freshRun);
 
-        // Update local promoResults for any newly completed episodes
-        const currentPromos = { ...promoResults };
-        for (const ep of freshRun.episodes) {
-          if (ep.analysis_result && !currentPromos[ep.content_hash]) {
-            currentPromos[ep.content_hash] = ep.analysis_result;
+        // Update local promoResults using functional updater to avoid stale closure
+        setPromoResults((prev) => {
+          const updated = { ...prev };
+          for (const ep of freshRun.episodes) {
+            if (ep.analysis_result && !updated[ep.content_hash]) {
+              updated[ep.content_hash] = ep.analysis_result;
+            }
           }
-        }
-        setPromoResults(currentPromos);
+          return updated;
+        });
 
         // Resume / analyze only pending episodes (skip completed and failed)
         const pendingEpisodes = freshRun.episodes.filter((e) => e.analysis_status === 'pending');
@@ -313,12 +318,51 @@ export const App: React.FC = () => {
       setCurrentRun(finalRun);
       if (finalRun.show_ranking && finalRun.show_ranking.length > 0) {
         setSelectedCandidate(finalRun.show_ranking[0]);
+      } else {
+        setSelectedCandidate(null);
+      }
+
+      // Auto-open show-ranking view on batch completion unless user paused or deliberately navigated away
+      if (!batchCancelRef.current && !userNavigatedDuringBatchRef.current) {
+        setActiveView('show-ranking');
       }
     } catch (err: unknown) {
       if (err instanceof Error) setPromoError(err.message);
     } finally {
       setIsBatchRunning(false);
     }
+  };
+
+  // Combined save-if-needed + batch analyze: one-click entry point for multi-episode packs
+  const handleAnalyzeAllEpisodes = async () => {
+    if (isSavingRun || isBatchRunning || !ingestResponse) return;
+
+    let runId: string;
+
+    if (!currentRun) {
+      // Auto-save first
+      setIsSavingRun(true);
+      setPromoError(null);
+      try {
+        const run = await createSavedRun(
+          ingestResponse.episodes,
+          `Run: ${ingestResponse.episodes[0]?.filename?.replace(/\.[^/.]+$/, '') || 'Pack'}`
+        );
+        setCurrentRun(run);
+        runId = run.id;
+      } catch (err: unknown) {
+        if (err instanceof Error) setPromoError(err.message);
+        else setPromoError('Failed to save run to Neon database.');
+        setIsSavingRun(false);
+        return; // Don't start batch if save fails
+      } finally {
+        setIsSavingRun(false);
+      }
+    } else {
+      runId = currentRun.id;
+    }
+
+    await runBatchScheduler(runId);
   };
 
   const handleAnalyzeAll = async () => {
@@ -434,6 +478,10 @@ export const App: React.FC = () => {
         isBatchRunning={isBatchRunning}
         onPauseRun={handlePauseRun}
         onResumeRun={handleResumeRun}
+        onAnalyzeAllEpisodes={handleAnalyzeAllEpisodes}
+        totalEpisodes={ingestResponse?.total_episodes ?? 0}
+        completedEpisodes={currentRun?.completed_episodes ?? 0}
+        failedEpisodes={currentRun?.failed_episodes ?? 0}
       />
 
       <SavedRunsModal
@@ -531,6 +579,10 @@ export const App: React.FC = () => {
                 if (activeView === 'show-ranking') {
                   setActiveView('timeline');
                 }
+                // Signal that user navigated away during batch — skip auto-switching to ranking
+                if (isBatchRunning) {
+                  userNavigatedDuringBatchRef.current = true;
+                }
               }}
               episodeStatuses={episodeStatuses}
               onRetryEpisode={handleRetryEpisode}
@@ -542,7 +594,10 @@ export const App: React.FC = () => {
               <div className="bg-paper-50 border-b border-paper-300 px-5 py-2 flex items-center justify-between">
                 <div className="flex items-center space-x-1 text-xs">
                   <button
-                    onClick={() => setActiveView('timeline')}
+                    onClick={() => {
+                      if (isBatchRunning) userNavigatedDuringBatchRef.current = true;
+                      setActiveView('timeline');
+                    }}
                     className={`inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md font-medium transition-colors ${
                       activeView === 'timeline'
                         ? 'bg-paper-200 text-charcoal font-semibold border border-paper-300'
@@ -554,7 +609,10 @@ export const App: React.FC = () => {
                   </button>
 
                   <button
-                    onClick={() => setActiveView('promos')}
+                    onClick={() => {
+                      if (isBatchRunning) userNavigatedDuringBatchRef.current = true;
+                      setActiveView('promos');
+                    }}
                     className={`inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md font-medium transition-colors ${
                       activeView === 'promos'
                         ? 'bg-burnt-100 text-burnt-900 font-semibold border border-burnt-300'
@@ -568,7 +626,7 @@ export const App: React.FC = () => {
                     </span>
                   </button>
 
-                  {currentRun && currentRun.show_ranking.length > 0 && (
+                  {currentRun && (currentRun.show_ranking.length > 0 || currentRun.completed_episodes > 0) && (
                     <button
                       onClick={() => setActiveView('show-ranking')}
                       className={`inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-md font-medium transition-colors ${
@@ -579,7 +637,7 @@ export const App: React.FC = () => {
                     >
                       <Trophy className="w-3.5 h-3.5 text-amber-700" />
                       <span>
-                        Show Top Promos ({currentRun.show_ranking.length})
+                        Show Top Promos{currentRun.show_ranking.length > 0 ? ` (${currentRun.show_ranking.length})` : ''}
                       </span>
                     </button>
                   )}

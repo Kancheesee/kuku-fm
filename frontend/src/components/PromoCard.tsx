@@ -97,6 +97,14 @@ export const PromoCard: React.FC<PromoCardProps> = ({
         </div>
       </div>
 
+      {/* Editorial Rationale */}
+      {candidate.rationale && (
+        <div className="mb-3 text-xs text-charcoal-muted">
+          <span className="font-semibold text-charcoal">Editorial Rationale:{' '}</span>
+          <span className="text-charcoal-muted">{candidate.rationale}</span>
+        </div>
+      )}
+
       {/* Unresolved Question */}
       <div className="p-2.5 bg-paper-200/70 rounded-md border border-paper-300 mb-3 text-xs text-charcoal">
         <span className="text-[10px] uppercase font-bold tracking-wider text-charcoal-subtle block mb-0.5">

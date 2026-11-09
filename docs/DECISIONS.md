@@ -201,11 +201,38 @@ This document records the foundational architecture and editorial product decisi
 | Quota candidate persistence & resumed retry assessment | Complete | Verified (pytest) | Verified on live DB |
 | Static asset exclusion in SPA rewrites & /api/health reachability | Complete | Verified (pytest) | Verified locally |
 | Serverless 4.5MB payload & 180s lease guards | Complete | Verified (pytest) | Verified locally |
+| One-click multi-episode batch discovery & auto-open show ranking | Complete | Verified (Vitest 5/5) | Verified in React App |
 | Multi-episode cross-cutting / stitching | Out of Scope (Milestone 4) | N/A | N/A |
 
 ---
 
-## 10. Remaining Limitations & Deployment Constraints
+## 10. Default Multi-Episode Reviewer Workflow (Problem 1 Alignment)
+
+- **One-Click Primary Action**:
+  - When a multi-episode pack (`total_episodes > 1`) is uploaded, **Analyze All Episodes ({N})** becomes the prominent, primary action button in the studio header.
+  - Single-episode "Find Promos" remains accessible as a secondary action for targeted inspection.
+  - "Save Run" is automatically orchestrated as step 1 of batch analysis, eliminating friction.
+- **Safe Chained Persistence & Stale State Defense**:
+  - If the upload is unsaved, clicking "Analyze All Episodes" calls `createSavedRun` first.
+  - The returned run ID is passed explicitly to `runBatchScheduler(runId)`, eliminating closures over stale React state.
+  - If run creation fails, the batch queue never starts, an error banner is displayed, and the uploaded scripts and timeline events remain fully intact.
+- **Non-Intrusive Auto-Opening of Show Ranking**:
+  - Upon batch completion, the UI automatically switches the view to `show-ranking` and selects the #1 ranked candidate for inspection in the detail drawer.
+  - If the user deliberately navigated away to inspect an episode timeline during batch processing (`userNavigatedDuringBatchRef = true`), the UI respects the reviewer's active context and does not forcibly switch views.
+- **Finished Runs Empty State & Provisional Indicator**:
+  - Completed runs with 0 scored candidates render a clear empty state explaining that no promo candidates met the threshold.
+  - Runs with pending episodes display the `Provisional` badge with completed/total episode coverage metrics.
+- **Ranked Candidate Cards**:
+  - Cards prominently show: global show rank (`#{rank}`), episode origin (`Episode {num} • {filename}`), timing coordinates (`{start} – {end}` and duration), opening hook summary, cliffhanger cut summary, editorial rationale (`candidate.rationale`), grounded unresolved question, and rubric scores.
+- **Status**:
+  - *Implemented*: `frontend/src/App.tsx`, `frontend/src/components/Header.tsx`, `frontend/src/components/PromoCard.tsx`, `frontend/src/components/ShowWideRankingView.tsx`.
+  - *Verified*:
+    - Automated Vitest regression suite (`frontend/src/test/batch_entry.test.tsx` and `race_condition.test.tsx`) — all 5 tests pass.
+    - Production build (`npm run build`) compiles cleanly in 1.51s with 0 TypeScript errors.
+
+---
+
+## 11. Remaining Limitations & Deployment Constraints
 
 1. **Intra-Episode Continuous Cuts Only**: Promo candidates remain continuous event intervals within a single episode. Multi-scene montages and cross-episode stitched cuts are deferred to future milestones.
 2. **Serverless Payload Hard Ceiling (4.5 MB)**: Uploads or raw JSON exports exceeding 4.5 MB will be rejected with HTTP 413. For script packs larger than 4.5 MB, client-side direct S3/Blob storage uploads would be required.

@@ -11,6 +11,7 @@ import {
   Play,
   Pause,
   Save,
+  Zap,
 } from 'lucide-react';
 
 interface HeaderProps {
@@ -34,6 +35,11 @@ interface HeaderProps {
   isBatchRunning?: boolean;
   onPauseRun?: () => void;
   onResumeRun?: () => void;
+  // One-click batch entry point
+  onAnalyzeAllEpisodes?: () => void;
+  totalEpisodes?: number;
+  completedEpisodes?: number;
+  failedEpisodes?: number;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -56,7 +62,12 @@ export const Header: React.FC<HeaderProps> = ({
   isBatchRunning,
   onPauseRun,
   onResumeRun,
+  onAnalyzeAllEpisodes,
+  totalEpisodes = 0,
+  completedEpisodes = 0,
+  failedEpisodes = 0,
 }) => {
+  const isMultiEpisode = totalEpisodes > 1;
   return (
     <header className="border-b border-paper-300 bg-paper-50 px-6 py-3 sticky top-0 z-30 flex items-center justify-between shadow-xs">
       <div className="flex items-center space-x-3.5">
@@ -100,8 +111,8 @@ export const Header: React.FC<HeaderProps> = ({
           <span>Saved Runs</span>
         </button>
 
-        {/* Save Run Button if scripts loaded but not yet persisted */}
-        {hasLoadedScripts && !hasSavedRun && onSaveRun && (
+        {/* Save Run Button - visible but secondary when multi-episode has one-click analyze */}
+        {hasLoadedScripts && !hasSavedRun && onSaveRun && !isMultiEpisode && (
           <button
             onClick={onSaveRun}
             disabled={isSavingRun}
@@ -194,9 +205,45 @@ export const Header: React.FC<HeaderProps> = ({
                 onClick={onAnalyzeAll}
                 className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-burnt-700 text-white hover:bg-burnt-800 transition-all shadow-xs"
               >
-                <Play className="w-3.5 h-3.5 text-burnt-200" />
-                <span>Analyze All</span>
+                <Zap className="w-3.5 h-3.5 text-burnt-200" />
+                <span>Analyze All Episodes{totalEpisodes > 1 ? ` (${totalEpisodes})` : ''}</span>
               </button>
+            )}
+          </div>
+        )}
+
+        {/* One-click Analyze All Episodes - prominent action for multi-episode packs without a saved run */}
+        {hasLoadedScripts && isMultiEpisode && !hasSavedRun && onAnalyzeAllEpisodes && (
+          <button
+            onClick={onAnalyzeAllEpisodes}
+            disabled={isSavingRun || isBatchRunning}
+            className={`inline-flex items-center space-x-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all shadow-xs focus:outline-none focus:ring-2 focus:ring-burnt-600 focus:ring-offset-1 ${
+              isSavingRun || isBatchRunning
+                ? 'bg-paper-300 text-charcoal-muted cursor-wait border border-paper-400'
+                : 'bg-burnt-700 hover:bg-burnt-800 text-white active:scale-[0.98]'
+            }`}
+          >
+            {isSavingRun ? (
+              <>
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                <span>Saving Run...</span>
+              </>
+            ) : (
+              <>
+                <Zap className="w-3.5 h-3.5 text-burnt-200" />
+                <span>Analyze All Episodes ({totalEpisodes})</span>
+              </>
+            )}
+          </button>
+        )}
+
+        {/* Batch progress indicator */}
+        {isBatchRunning && totalEpisodes > 0 && (
+          <div className="flex items-center space-x-1.5 text-[11px] font-semibold text-burnt-800 bg-burnt-50 px-2.5 py-1 rounded-md border border-burnt-200">
+            <RefreshCw className="w-3 h-3 animate-spin text-burnt-700" />
+            <span>{completedEpisodes} of {totalEpisodes} analyzed</span>
+            {failedEpisodes > 0 && (
+              <span className="text-rose-700">({failedEpisodes} failed)</span>
             )}
           </div>
         )}
@@ -209,7 +256,9 @@ export const Header: React.FC<HeaderProps> = ({
             className={`inline-flex items-center space-x-1.5 px-4 py-1.5 rounded-lg text-xs font-semibold tracking-wide transition-all shadow-xs focus:outline-none focus:ring-2 focus:ring-burnt-600 focus:ring-offset-1 ${
               isAnalyzingPromos
                 ? 'bg-paper-300 text-charcoal-muted cursor-wait border border-paper-400'
-                : 'bg-burnt-700 hover:bg-burnt-800 text-white active:scale-[0.98]'
+                : isMultiEpisode && !hasSavedRun
+                  ? 'bg-paper-200 hover:bg-paper-300 text-charcoal border border-paper-300'
+                  : 'bg-burnt-700 hover:bg-burnt-800 text-white active:scale-[0.98]'
             }`}
           >
             {isAnalyzingPromos ? (
